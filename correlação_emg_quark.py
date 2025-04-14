@@ -1,267 +1,389 @@
+import os
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.interpolate import interp1d
-from scipy.stats import pearsonr, linregress
+import warnings
+from scipy.stats import ttest_rel
+import xlsxwriter
+
+# Suprime warnings indesejados (por exemplo, os do interp1d se houver)
+warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 
-def synchronize_data(df_emg_80, df_emg_120, df_quark_80, df_quark_120):
+# ---------- Função auxiliar para sanitizar nomes de arquivo ----------
+def sanitize_filename(filename):
+    forbidden = ['/', '\\', ':', '*', '?', '"', '<', '>', '|']
+    for char in forbidden:
+        filename = filename.replace(char, '_')
+    return filename
+
+
+# ---------- Função auxiliar: Converter índice para letra (para gráficos no Excel) ----------
+def col_to_excel(col_index):
+    letters = ""
+    while col_index >= 0:
+        letters = chr(col_index % 26 + 65) + letters
+        col_index = col_index // 26 - 1
+    return letters
+
+
+# ---------- Sincronização e Criação do Sinal EMG ----------
+def create_step_emg(time_array, total_time, emg_segments, n_segments=10):
     """
-    Sincroniza os dados de EMG (80% e 120%) com os dados do Quark (teste de ergometria 80% e 120%).
+    Cria uma step function para os dados de EMG.
 
-    Parâmetros:
-      df_emg_80: DataFrame da EMG referente ao teste de 80%
-      df_emg_120: DataFrame da EMG referente ao teste de 120%
-      df_quark_80: DataFrame do teste de ergometria 80% (deve conter a coluna 't' com o tempo)
-      df_quark_120: DataFrame do teste de ergometria 120% (deve conter a coluna 't' com o tempo)
-
-    Retorna:
-      df_quark_80 e df_quark_120 com uma coluna adicional 'EMG_signal' sincronizada ao tempo.
+    Cada instante em time_array recebe o valor RMS do segmento correspondente,
+    considerando que o teste total dura total_time segundos dividido em n_segments.
     """
-    # Remover espaços extras nos nomes das colunas
-    df_quark_80.columns = df_quark_80.columns.str.strip()
-    df_quark_120.columns = df_quark_120.columns.str.strip()
+    segment_length = total_time / n_segments
+    emg_signal = np.zeros_like(time_array, dtype=float)
+    for i, t in enumerate(time_array):
+        seg_idx = int(t // segment_length)
+        if seg_idx >= n_segments:
+            seg_idx = n_segments - 1
+        emg_signal[i] = emg_segments[seg_idx]
+    return emg_signal
 
-    # Exibir as colunas para confirmação
-    print("Colunas do Quark 80%:", df_quark_80.columns)
-    print("Colunas do Quark 120%:", df_quark_120.columns)
 
-    # Verificar se a coluna de tempo 't' existe
-    if 't' in df_quark_80.columns:
-        quark_time_80 = df_quark_80['t']
+def synchronize_emg_step(emg_file, quark_file, test_label, n_segments=10):
+    """
+    Lê o arquivo de EMG tratado (2 linhas: linha 0 = 80%, linha 1 = 120%) e o arquivo do Quark,
+    gerando a coluna 'EMG_RMS' via step function e adicionando a coluna 'Segment'.
+    """
+    # Ler arquivo de EMG tratado com conversão de decimais
+    df_emg = pd.read_excel(emg_file, decimal=',')
+    df_emg.columns = df_emg.columns.str.strip()  # Remove espaços extras
+    print("Colunas do arquivo EMG:", df_emg.columns.tolist())
+
+    if test_label == "80%":
+        emg_data = df_emg.iloc[0]
+    elif test_label == "120%":
+        emg_data = df_emg.iloc[1]
     else:
-        raise ValueError("A coluna de tempo 't' não foi encontrada no arquivo Quark 80%")
+        raise ValueError("test_label deve ser '80%' ou '120%'.")
 
-    if 't' in df_quark_120.columns:
-        quark_time_120 = df_quark_120['t']
-    else:
-        raise ValueError("A coluna de tempo 't' não foi encontrada no arquivo Quark 120%")
+    emg_rms_segments = []
+    for i in range(n_segments):
+        col_name = f'RMS Segmento {i + 1}'
+        if col_name not in df_emg.columns:
+            raise ValueError(f"Coluna '{col_name}' não encontrada. Colunas disponíveis: {df_emg.columns.tolist()}")
+        emg_rms_segments.append(emg_data[col_name])
+    print(f"\nValores de EMG extraídos para teste {test_label}:", emg_rms_segments)
 
-    # Exibir os primeiros valores da coluna de tempo
-    print("Primeiros valores da coluna 't' para Quark 80%:", quark_time_80.head())
-    print("Primeiros valores da coluna 't' para Quark 120%:", quark_time_120.head())
+    # Ler arquivo do Quark
+    df_quark = pd.read_excel(quark_file, decimal=',')
+    df_quark.columns = df_quark.columns.str.strip()
+    df_quark['time_sec'] = pd.to_timedelta(df_quark['t']).dt.total_seconds()
+    t_min = df_quark['time_sec'].min()
+    df_quark['rel_time_sec'] = df_quark['time_sec'] - t_min
+    total_time = df_quark['rel_time_sec'].max()
+    print("\nTempo total do teste (s):", total_time)
 
-    # Converter o tempo para segundos (supondo formato hh:mm:ss)
-    quark_time_80 = pd.to_timedelta(quark_time_80, errors='coerce').dt.total_seconds()
-    quark_time_120 = pd.to_timedelta(quark_time_120, errors='coerce').dt.total_seconds()
+    df_quark['EMG_RMS'] = create_step_emg(df_quark['rel_time_sec'].values, total_time, emg_rms_segments, n_segments)
 
-    print("Tempo (segundos) - Quark 80%:", quark_time_80.head())
-    print("Tempo (segundos) - Quark 120%:", quark_time_120.head())
+    # Adicionar coluna de segmentação (0 a n_segments-1)
+    segment_length = total_time / n_segments
+    df_quark['Segment'] = (df_quark['rel_time_sec'] // segment_length).astype(int)
+    df_quark.loc[df_quark['Segment'] >= n_segments, 'Segment'] = n_segments - 1
 
-    # Para a EMG, usar o índice dos segmentos como base para o tempo.
-    # Cria cópia dos DataFrames para evitar SettingWithCopyWarning.
-    df_emg_80 = df_emg_80.copy()
-    df_emg_120 = df_emg_120.copy()
-    segment_time = np.arange(len(df_emg_80)) * 10  # Cada segmento representa 10 segundos (ajuste se necessário)
-    df_emg_80.loc[:, 'Time_seconds'] = segment_time
-    df_emg_120.loc[:, 'Time_seconds'] = segment_time
+    print("\nEstatísticas de EMG_RMS:")
+    print(df_quark['EMG_RMS'].describe())
 
-    # Interpolação para sincronização (teste de 80%)
-    emg_time_80 = df_emg_80['Time_seconds']
-    interpolator_80 = interp1d(emg_time_80, df_emg_80['RMS Total'], kind='linear', fill_value='extrapolate')
-    emg_interp_80 = interpolator_80(quark_time_80)
-    df_quark_80['EMG_signal'] = emg_interp_80
-
-    # Interpolação para sincronização (teste de 120%)
-    emg_time_120 = df_emg_120['Time_seconds']
-    interpolator_120 = interp1d(emg_time_120, df_emg_120['RMS Total'], kind='linear', fill_value='extrapolate')
-    emg_interp_120 = interpolator_120(quark_time_120)
-    df_quark_120['EMG_signal'] = emg_interp_120
-
-    return df_quark_80, df_quark_120
+    return df_quark, total_time
 
 
-def plot_comparison(df_quark_80, df_quark_120):
+# ---------- Funções para Análise Estatística Detalhada ----------
+def detailed_statistics(df, variables):
     """
-    Gera gráficos comparando VO2 e EMG_signal para os testes de ergometria de 80% e 120%.
-
-    Parâmetros:
-      df_quark_80: DataFrame sincronizado do teste de 80%
-      df_quark_120: DataFrame sincronizado do teste de 120%
+    Calcula estatísticas descritivas para as variáveis especificadas.
+    Retorna um DataFrame resumo.
     """
-    plt.figure(figsize=(12, 6))
-
-    # Gráfico para teste de 80%
-    plt.subplot(2, 1, 1)
-    plt.plot(df_quark_80['t'], df_quark_80['VO2'], label='VO2 (Quark)', color='blue')
-    plt.plot(df_quark_80['t'], df_quark_80['EMG_signal'], label='EMG Signal', color='red', alpha=0.7)
-    plt.xlabel('Tempo (s)')
-    plt.ylabel('Valor')
-    plt.title('Comparação de VO2 e EMG (80% Intensidade)')
-    plt.legend()
-
-    # Gráfico para teste de 120%
-    plt.subplot(2, 1, 2)
-    plt.plot(df_quark_120['t'], df_quark_120['VO2'], label='VO2 (Quark)', color='green')
-    plt.plot(df_quark_120['t'], df_quark_120['EMG_signal'], label='EMG Signal', color='red', alpha=0.7)
-    plt.xlabel('Tempo (s)')
-    plt.ylabel('Valor')
-    plt.title('Comparação de VO2 e EMG (120% Intensidade)')
-    plt.legend()
-
-    plt.tight_layout()
-    plt.show()
-
-
-def calculate_correlation(df_quark_80, df_quark_120):
-    """
-    Calcula e exibe a correlação entre VO2 e EMG_signal para os testes de 80% e 120%.
-
-    Retorna:
-      Tuple contendo os coeficientes de correlação para 80% e 120%.
-    """
-    correlation_vo2_80 = np.corrcoef(df_quark_80['VO2'], df_quark_80['EMG_signal'])[0, 1]
-    correlation_vo2_120 = np.corrcoef(df_quark_120['VO2'], df_quark_120['EMG_signal'])[0, 1]
-    print("Correlação VO2-EMG (80%):", round(correlation_vo2_80, 2))
-    print("Correlação VO2-EMG (120%):", round(correlation_vo2_120, 2))
-    return correlation_vo2_80, correlation_vo2_120
-
-
-def analyze_variable_relationships(df, test_label):
-    """
-    Analisa a relação entre o sinal EMG e cada variável do teste de ergometria.
-
-    Para cada variável (exceto as de tempo e a coluna 'EMG_signal'), calcula:
-      - Coeficiente de correlação de Pearson e seu p-valor.
-      - Regressão linear (inclinação, intercepto, r-value, p-valor e erro padrão).
-
-    Gera também um gráfico de dispersão com a linha de regressão para cada variável, que é salvo como arquivo PNG.
-
-    Parâmetros:
-      df: DataFrame com os dados do teste sincronizado.
-      test_label: Rótulo para identificar o teste (exemplo: "80%" ou "120%").
-
-    Retorna:
-      DataFrame com os resultados estatísticos para cada variável.
-    """
-    # Exclui as colunas relacionadas ao tempo e à sinal EMG
-    variables = [col for col in df.columns if col not in ['EMG_signal', 't', 'Time_seconds']]
-    results = []
-
+    summary_list = []
     for var in variables:
-        x = df[var].values
-        y = df['EMG_signal'].values
+        stats = df[var].describe().to_dict()
+        stats['Variable'] = var
+        summary_list.append(stats)
+    return pd.DataFrame(summary_list)
 
-        try:
-            corr, p_corr = pearsonr(x, y)
-        except Exception as e:
-            corr, p_corr = np.nan, np.nan
 
-        try:
-            regression = linregress(x, y)
-            slope, intercept, r_value, p_reg, std_err = regression
-        except Exception as e:
-            slope, intercept, r_value, p_reg, std_err = (np.nan,) * 5
+def analyze_relationships(df, variables):
+    """
+    Calcula a correlação entre cada variável e EMG_RMS.
+    Retorna um DataFrame com a variável e a correlação.
+    """
+    rel_list = []
+    for var in variables:
+        if df[var].std() > 0 and df['EMG_RMS'].std() > 0:
+            corr = np.corrcoef(df[var], df['EMG_RMS'])[0, 1]
+        else:
+            corr = np.nan
+        rel_list.append({'Variable': var, 'Correlation_EMG': corr})
+    return pd.DataFrame(rel_list)
+
+
+# ---------- Funções para Teste t Pareado e Comparação ----------
+def compute_segment_means(df, variables, n_segments=10):
+    """
+    Agrupa o DataFrame por 'Segment' e calcula a média de cada variável para cada segmento.
+    Retorna um dicionário onde para cada variável há um array de n_segments médias.
+    """
+    grouped = df.groupby('Segment')
+    means = {}
+    for var in variables:
+        means[var] = grouped[var].mean().values
+    return means
+
+
+def perform_paired_t_tests(means80, means120, variables):
+    """
+    Para cada variável, aplica o teste t pareado entre os 10 segmentos dos testes 80% e 120%.
+    Retorna um DataFrame com os t-stats e p-values.
+    """
+    results = []
+    for var in variables:
+        data80 = means80[var]
+        data120 = means120[var]
+        if len(data80) == len(data120) and len(data80) > 0:
+            t_stat, p_val = ttest_rel(data80, data120)
+        else:
+            t_stat, p_val = np.nan, np.nan
+        results.append({'Variable': var, 't_stat': t_stat, 'p_value': p_val})
+    return pd.DataFrame(results)
+
+
+# Função para calcular Cohen's d para dados pareados
+def cohen_d_paired(x, y):
+    diff = x - y
+    return np.mean(diff) / np.std(diff, ddof=1)
+
+
+def comparative_statistics(df80, df120, variables):
+    """
+    Compara para cada variável os testes 80% e 120%:
+      - Calcula média para cada intensidade,
+      - Diferença absoluta e percentual,
+      - Aplica teste t pareado usando médias por segmento,
+      - Calcula Cohen's d.
+    Retorna um DataFrame com esses resultados.
+    """
+    results = []
+    for var in variables:
+        mean_80 = df80[var].mean()
+        mean_120 = df120[var].mean()
+        diff_abs = mean_80 - mean_120
+        diff_perc = (diff_abs / mean_80 * 100) if mean_80 != 0 else np.nan
+
+        means80 = df80.groupby('Segment')[var].mean().values
+        means120 = df120.groupby('Segment')[var].mean().values
+
+        if len(means80) == len(means120) and len(means80) > 0:
+            t_stat, p_val = ttest_rel(means80, means120)
+            d_val = cohen_d_paired(means80, means120)
+        else:
+            t_stat, p_val, d_val = np.nan, np.nan, np.nan
 
         results.append({
             'Variable': var,
-            'Pearson_corr': corr,
-            'Correlation_pvalue': p_corr,
-            'Regression_slope': slope,
-            'Regression_intercept': intercept,
-            'Regression_rvalue': r_value,
-            'Regression_pvalue': p_reg,
-            'Regression_std_err': std_err,
+            'Mean_80': mean_80,
+            'Mean_120': mean_120,
+            'Diff_abs': diff_abs,
+            'Diff_perc': diff_perc,
+            't_stat': t_stat,
+            'p_value': p_val,
+            'Cohen_d': d_val
         })
+    return pd.DataFrame(results)
 
-        # Gera o gráfico de dispersão com a linha de regressão
-        plt.figure(figsize=(8, 6))
-        plt.scatter(x, y, label='Dados', alpha=0.7)
-        if not np.isnan(slope):
-            x_range = np.linspace(np.min(x), np.max(x), 100)
-            y_pred = intercept + slope * x_range
-            plt.plot(x_range, y_pred, color='red', label='Linha de regressão')
-        plt.title(f'Relação entre EMG e {var} ({test_label})')
-        plt.xlabel(var)
-        plt.ylabel('EMG_signal')
-        plt.legend()
-        plt.grid(True)
-        plt.tight_layout()
 
-        # Sanitiza o nome da variável para uso no nome do arquivo (substitui "/" por "_")
-        safe_var = var.replace("/", "_")
-        safe_label = test_label.replace("%", "").strip()
-        plot_filename = f'scatter_{safe_var}_{safe_label}.png'
-        plt.savefig(plot_filename)
+# ---------- Funções para Gerar Gráficos ----------
+def generate_time_series_plots(df, intensity, output_folder):
+    """
+    Gera gráficos de série temporal para cada variável (exceto tempo, segment e EMG_RMS).
+    O eixo x é o tempo relativo e os eixos y exibem a variável e o EMG_RMS (com dois eixos).
+    Os gráficos são salvos na pasta output_folder com nomes sanitizados.
+    """
+    os.makedirs(output_folder, exist_ok=True)
+    skip_cols = {'t', 'time_sec', 'rel_time_sec', 'EMG_RMS', 'Segment'}
+    variables = [col for col in df.columns if col not in skip_cols]
+
+    for var in variables:
+        safe_var = sanitize_filename(var)
+        fig, ax1 = plt.subplots(figsize=(10, 6))
+        color1 = 'tab:blue'
+        ax1.set_xlabel('Tempo Relativo (s)')
+        ax1.set_ylabel(var, color=color1)
+        ax1.plot(df['rel_time_sec'], df[var], marker='o', linestyle='-', color=color1, label=var)
+        ax1.tick_params(axis='y', labelcolor=color1)
+
+        ax2 = ax1.twinx()
+        color2 = 'tab:red'
+        ax2.set_ylabel('EMG_RMS', color=color2)
+        ax2.plot(df['rel_time_sec'], df['EMG_RMS'], marker='x', linestyle='--', color=color2, label='EMG_RMS')
+        ax2.tick_params(axis='y', labelcolor=color2)
+
+        plt.title(f"{intensity} - {var} vs EMG_RMS ao longo do tempo")
+        fig.tight_layout()
+        save_path = os.path.join(output_folder, f"{sanitize_filename(intensity)}_{safe_var}.png")
+        plt.savefig(save_path)
         plt.close()
 
-    df_results = pd.DataFrame(results)
-    return df_results
 
-
-def analyze_emg_ergometry(df_quark_80, df_quark_120):
+def generate_comparison_bar_charts(df80, df120, variables, output_folder):
     """
-    Realiza a análise estatística para os testes de ergometria (80% e 120%) e gera uma comparação entre eles.
-
-    Retorna:
-      analysis_80: DataFrame com as estatísticas do teste de 80%.
-      analysis_120: DataFrame com as estatísticas do teste de 120%.
-      comparison: DataFrame com a comparação (diferença) entre os resultados dos dois testes.
+    Gera gráficos de barras comparativos (usando as médias) para cada variável entre os testes 80% e 120%.
+    Os gráficos são salvos na pasta output_folder com nomes sanitizados.
     """
-    analysis_80 = analyze_variable_relationships(df_quark_80, "80%")
-    analysis_120 = analyze_variable_relationships(df_quark_120, "120%")
-    comparison = analysis_80.merge(analysis_120, on='Variable', suffixes=('_80', '_120'))
-    comparison['Diff_Pearson_corr'] = comparison['Pearson_corr_120'] - comparison['Pearson_corr_80']
-    comparison['Diff_Regression_slope'] = comparison['Regression_slope_120'] - comparison['Regression_slope_80']
-    return analysis_80, analysis_120, comparison
+    os.makedirs(output_folder, exist_ok=True)
+    means80 = df80[variables].mean()
+    means120 = df120[variables].mean()
+    for var in variables:
+        safe_var = sanitize_filename(var)
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.bar(['80%', '120%'], [means80[var], means120[var]], color=['blue', 'green'])
+        ax.set_title(f"Comparação das Médias de {var}")
+        ax.set_ylabel(var)
+        save_path = os.path.join(output_folder, f"Comparison_{safe_var}.png")
+        plt.savefig(save_path)
+        plt.close()
 
 
-def export_analysis_to_excel(analysis_80, analysis_120, comparison, output_filename='emg_ergometry_analysis.xlsx'):
+# ---------- Função para Gerar o Relatório Excel Completo com Gráficos ----------
+def generate_full_excel_report(df_quark_80, df_quark_120, corr_80, corr_120,
+                               stats80, stats120, rel80, rel120, ttest_results, comp_stats,
+                               folder_plots_80, folder_plots_120, comp_folder, filename='Full_Report.xlsx'):
     """
-    Exporta os resultados das análises para um arquivo Excel com três planilhas:
-      - '80% Analysis'
-      - '120% Analysis'
-      - 'Comparison'
-
-    Parâmetros:
-      analysis_80: DataFrame com as estatísticas do teste de 80%
-      analysis_120: DataFrame com as estatísticas do teste de 120%
-      comparison: DataFrame comparativo dos dois testes
-      output_filename: Nome do arquivo Excel de saída.
+    Gera um relatório Excel contendo:
+      - Planilhas "Teste 80%" e "Teste 120%" com os dados sincronizados.
+      - Planilha "Resumo" com estatísticas descritivas, correlações e resultados do teste t pareado.
+      - Planilha "Comparativo" com a tabela de comparação detalhada (comp_stats).
+      - Planilhas "Gráficos_80", "Gráficos_120" e "G_80e120" com os gráficos inseridos.
     """
-    with pd.ExcelWriter(output_filename, engine='xlsxwriter') as writer:
-        analysis_80.to_excel(writer, sheet_name='80% Analysis', index=False)
-        analysis_120.to_excel(writer, sheet_name='120% Analysis', index=False)
-        comparison.to_excel(writer, sheet_name='Comparison', index=False)
-    print(f"Resultados exportados para '{output_filename}'.")
+    with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
+        df_quark_80.to_excel(writer, sheet_name='Teste 80%', index=False)
+        df_quark_120.to_excel(writer, sheet_name='Teste 120%', index=False)
+
+        # Junta estatísticas e correlações para resumo geral
+        stats80['Teste'] = '80%'
+        stats120['Teste'] = '120%'
+        summary = pd.concat([stats80, stats120], ignore_index=True)
+        rel80['Teste'] = '80%'
+        rel120['Teste'] = '120%'
+        rel_summary = pd.concat([rel80, rel120], ignore_index=True)
+        resumo = pd.merge(summary, rel_summary, on=['Teste', 'Variable'], how='outer')
+        # Mescla os resultados do teste t pareado
+        ttest_results = ttest_results.drop(columns=['Teste'], errors='ignore')
+        resumo = pd.merge(resumo, ttest_results, on='Variable', how='left')
+        resumo = resumo[['Teste', 'Variable', 'count', 'mean', 'std', 'min', '25%', '50%', '75%', 'max',
+                         'Correlation_EMG', 't_stat', 'p_value']]
+        resumo.to_excel(writer, sheet_name='Resumo', index=False)
+
+        # Inserir a tabela comparativa dos efeitos
+        comp_stats.to_excel(writer, sheet_name='Comparativo', index=False)
+
+        workbook = writer.book
+
+        # Função auxiliar para inserir imagens de uma pasta em uma planilha
+        def insert_images_from_folder(worksheet, folder, start_row):
+            images = [f for f in os.listdir(folder) if f.endswith(".png")]
+            row = start_row
+            col = 0
+            for image in images:
+                img_path = os.path.join(folder, image)
+                worksheet.insert_image(row, col, img_path, {'x_scale': 0.8, 'y_scale': 0.8})
+                row += 20
+
+        worksheet80 = workbook.add_worksheet("Gráficos_80")
+        insert_images_from_folder(worksheet80, folder_plots_80, start_row=0)
+
+        worksheet120 = workbook.add_worksheet("Gráficos_120")
+        insert_images_from_folder(worksheet120, folder_plots_120, start_row=0)
+
+        worksheetComp = workbook.add_worksheet("G_80e120")
+        insert_images_from_folder(worksheetComp, comp_folder, start_row=0)
+
+    print(f"\nRelatório completo gerado e salvo em '{filename}'.")
+
+
+# ---------- Função Main ----------
+def main():
+    # Caminhos dos arquivos (ajuste conforme necessário)
+    emg_file = r"C:\Users\RUBENS\PycharmProjects\EMGAnalise\EMGProcessado\resultados.xlsx"
+    quark_80_file = r"C:\Users\RUBENS\PycharmProjects\EMGAnalise\QuarkData\CIDO.xlsx"
+    quark_120_file = r"C:\Users\RUBENS\PycharmProjects\EMGAnalise\QuarkData\CIDO2.xlsx"
+
+    # Sincronizar os dados dos testes 80% e 120%
+    df_quark_80, total_time_80 = synchronize_emg_step(emg_file, quark_80_file, test_label="80%", n_segments=10)
+    df_quark_120, total_time_120 = synchronize_emg_step(emg_file, quark_120_file, test_label="120%", n_segments=10)
+
+    # Definir as variáveis para análise (excluindo colunas de tempo, segment e EMG_RMS)
+    skip_cols = {'t', 'time_sec', 'rel_time_sec', 'EMG_RMS', 'Segment'}
+    variables = [col for col in df_quark_80.columns if col not in skip_cols]
+
+    # Estatísticas descritivas
+    stats80 = detailed_statistics(df_quark_80, variables)
+    stats120 = detailed_statistics(df_quark_120, variables)
+
+    # Correlações individuais com EMG_RMS
+    rel80 = analyze_relationships(df_quark_80, variables)
+    rel120 = analyze_relationships(df_quark_120, variables)
+
+    # Gerar gráficos individuais de série temporal
+    folder_plots_80 = "Graphs_80"
+    folder_plots_120 = "Graphs_120"
+    generate_time_series_plots(df_quark_80, "80%", folder_plots_80)
+    generate_time_series_plots(df_quark_120, "120%", folder_plots_120)
+
+    # Gerar gráficos comparativos de barras entre os testes (médias)
+    folder_comp = "G_80e120"
+    generate_comparison_bar_charts(df_quark_80, df_quark_120, variables, folder_comp)
+
+    # Calcular médias por segmento para teste t pareado
+    means80 = compute_segment_means(df_quark_80, variables, n_segments=10)
+    means120 = compute_segment_means(df_quark_120, variables, n_segments=10)
+    ttest_results = perform_paired_t_tests(means80, means120, variables)
+    ttest_results['Teste'] = 'Pareado'
+
+    print("\nResultados do teste t pareado:")
+    print(ttest_results)
+
+    # Calcular uma análise comparativa detalhada entre as intensidades para cada variável
+    comp_stats = comparative_statistics(df_quark_80, df_quark_120, variables)
+    print("\nComparação detalhada entre intensidades (80% vs 120%):")
+    print(comp_stats)
+
+    # Tabela comparativa simples das médias (80% vs 120%)
+    comp_table = pd.DataFrame({
+        'Variable': variables,
+        'Mean_80': [df_quark_80[var].mean() for var in variables],
+        'Mean_120': [df_quark_120[var].mean() for var in variables]
+    })
+    print("\nComparativo das médias das variáveis (80% vs 120%):")
+    print(comp_table)
+
+    # Gerar relatório Excel completo com os gráficos, resumo, e tabela comparativa
+    generate_full_excel_report(df_quark_80, df_quark_120,
+                               corr_80=np.corrcoef(df_quark_80["VO2"], df_quark_80["EMG_RMS"])[0, 1],
+                               corr_120=np.corrcoef(df_quark_120["VO2"], df_quark_120["EMG_RMS"])[0, 1],
+                               stats80=stats80, stats120=stats120,
+                               rel80=rel80, rel120=rel120,
+                               ttest_results=ttest_results,
+                               comp_stats=comp_stats,
+                               folder_plots_80=folder_plots_80,
+                               folder_plots_120=folder_plots_120,
+                               comp_folder=folder_comp,
+                               filename='emg_ergometry_report.xlsx')
+
+    # Exemplo de plot simples para visualizar o teste 80%
+    plt.figure(figsize=(10, 6))
+    plt.plot(df_quark_80["rel_time_sec"], df_quark_80["EMG_RMS"], "o-", label="EMG_RMS (80%)")
+    plt.plot(df_quark_80["rel_time_sec"], df_quark_80["VO2"], "x-", label="VO2 (80%)")
+    plt.xlabel("Tempo Relativo (s)")
+    plt.ylabel("Valor")
+    plt.title("Comparação: EMG_RMS vs VO2 - Teste 80%")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
 
 
 if __name__ == '__main__':
-    # Caminhos para os arquivos de dados (ajuste conforme necessário)
-    emg_file_path = r"C:\Users\RUBENS\PycharmProjects\EMGAnalise\EMGProcessado\resultados.xlsx"
-    quark_80_file_path = r"C:\Users\RUBENS\PycharmProjects\EMGAnalise\QuarkData\CIDO.xlsx"  # Teste 80%
-    quark_120_file_path = r"C:\Users\RUBENS\PycharmProjects\EMGAnalise\QuarkData\CIDO2.xlsx"  # Teste 120%
-
-    # Leitura dos arquivos Excel
-    df_emg = pd.read_excel(emg_file_path)
-    df_quark_80 = pd.read_excel(quark_80_file_path)
-    df_quark_120 = pd.read_excel(quark_120_file_path)
-
-    # Selecione as colunas de interesse para o teste de ergometria
-    columns_of_interest = ['Rf', 'mRF', 'VT', 'mVT', 'VE', 'mVE',
-                           'VO2', 'mVO2', 'VCO2', 'mVCO2', 'VE/VO2',
-                           'mVE/VO2', 'VE/VCO2', 'mVE/VCO2', 'R']
-    # Obs.: os arquivos do Quark devem possuir também uma coluna 't' com informações de tempo.
-    df_quark_80 = df_quark_80[columns_of_interest + ['t']]
-    df_quark_120 = df_quark_120[columns_of_interest + ['t']]
-
-    # Seleciona os testes de EMG (assumindo que a primeira linha é para 80% e a segunda para 120%)
-    df_emg_80 = df_emg.iloc[0:1].copy()
-    df_emg_120 = df_emg.iloc[1:2].copy()
-
-    # Sincroniza os dados
-    df_quark_80_synch, df_quark_120_synch = synchronize_data(df_emg_80, df_emg_120, df_quark_80, df_quark_120)
-
-    # (Opcional) Gerar gráficos comparativos
-    # plot_comparison(df_quark_80_synch, df_quark_120_synch)
-
-    # (Opcional) Calcular e exibir correlações
-    calculate_correlation(df_quark_80_synch, df_quark_120_synch)
-
-    # Realiza a análise estatística completa e gera os DataFrames de resultados
-    analysis_80, analysis_120, comparison = analyze_emg_ergometry(df_quark_80_synch, df_quark_120_synch)
-
-    # Exporta os resultados para um arquivo Excel
-    export_analysis_to_excel(analysis_80, analysis_120, comparison, output_filename='emg_ergometry_analysis.xlsx')
-
-    print("Análise estatística e exportação concluídas!")
+    main()
