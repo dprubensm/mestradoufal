@@ -6,7 +6,7 @@ import warnings
 from scipy.stats import ttest_rel
 import xlsxwriter
 
-# Suprime warnings indesejados (por exemplo, os do interp1d se houver)
+# Suprime warnings indesejados (por exemplo, dos interpolações)
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 
@@ -47,7 +47,7 @@ def create_step_emg(time_array, total_time, emg_segments, n_segments=10):
 
 def synchronize_emg_step(emg_file, quark_file, test_label, n_segments=10):
     """
-    Lê o arquivo de EMG tratado (2 linhas: linha 0 = 80%, linha 1 = 120%) e o arquivo do Quark,
+    Lê o arquivo de EMG tratado (2 linhas: 0 = 80%, 1 = 120%) e o arquivo do Quark,
     gerando a coluna 'EMG_RMS' via step function e adicionando a coluna 'Segment'.
     """
     # Ler arquivo de EMG tratado com conversão de decimais
@@ -81,7 +81,7 @@ def synchronize_emg_step(emg_file, quark_file, test_label, n_segments=10):
 
     df_quark['EMG_RMS'] = create_step_emg(df_quark['rel_time_sec'].values, total_time, emg_rms_segments, n_segments)
 
-    # Adicionar coluna de segmentação (0 a n_segments-1)
+    # Adicionar coluna de segmentação (de 0 a n_segments-1)
     segment_length = total_time / n_segments
     df_quark['Segment'] = (df_quark['rel_time_sec'] // segment_length).astype(int)
     df_quark.loc[df_quark['Segment'] >= n_segments, 'Segment'] = n_segments - 1
@@ -125,7 +125,7 @@ def analyze_relationships(df, variables):
 def compute_segment_means(df, variables, n_segments=10):
     """
     Agrupa o DataFrame por 'Segment' e calcula a média de cada variável para cada segmento.
-    Retorna um dicionário onde para cada variável há um array de n_segments médias.
+    Retorna um dicionário onde cada variável possui um array de n_segments médias.
     """
     grouped = df.groupby('Segment')
     means = {}
@@ -137,7 +137,7 @@ def compute_segment_means(df, variables, n_segments=10):
 def perform_paired_t_tests(means80, means120, variables):
     """
     Para cada variável, aplica o teste t pareado entre os 10 segmentos dos testes 80% e 120%.
-    Retorna um DataFrame com os t-stats e p-values.
+    Retorna um DataFrame com os t-stat e p-values.
     """
     results = []
     for var in variables:
@@ -159,12 +159,12 @@ def cohen_d_paired(x, y):
 
 def comparative_statistics(df80, df120, variables):
     """
-    Compara para cada variável os testes 80% e 120%:
-      - Calcula média para cada intensidade,
+    Compara cada variável entre os testes 80% e 120%:
+      - Calcula as médias para cada intensidade,
       - Diferença absoluta e percentual,
-      - Aplica teste t pareado usando médias por segmento,
+      - Aplica o teste t pareado utilizando as médias por segmento,
       - Calcula Cohen's d.
-    Retorna um DataFrame com esses resultados.
+    Retorna um DataFrame com estes resultados.
     """
     results = []
     for var in variables:
@@ -195,11 +195,42 @@ def comparative_statistics(df80, df120, variables):
     return pd.DataFrame(results)
 
 
-# ---------- Funções para Gerar Gráficos ----------
+# ---------- Função para Gerar Gráficos de Linha Comparativos (em função do tempo normalizado) ----------
+def generate_comparison_line_plots(df1, df2, intensity1, intensity2, total_time1, total_time2, variables,
+                                   output_folder):
+    """
+    Para cada variável, gera um gráfico de linha com o eixo x representando o tempo normalizado (0-100%)
+    e o eixo y os valores da variável. São plotadas duas linhas: uma para cada intensidade (df1 e df2).
+    Os gráficos são salvos na pasta output_folder.
+    """
+    os.makedirs(output_folder, exist_ok=True)
+
+    # Cria cópias para não modificar os dados originais e calcula tempo normalizado (%)
+    df1 = df1.copy()
+    df2 = df2.copy()
+    df1['norm_time'] = (df1['rel_time_sec'] / total_time1) * 100
+    df2['norm_time'] = (df2['rel_time_sec'] / total_time2) * 100
+
+    for var in variables:
+        safe_var = sanitize_filename(var)
+        plt.figure(figsize=(10, 6))
+        plt.plot(df1['norm_time'], df1[var], marker='o', linestyle='-', color='blue', label=f"{intensity1}")
+        plt.plot(df2['norm_time'], df2[var], marker='x', linestyle='--', color='red', label=f"{intensity2}")
+        plt.xlabel("Tempo Normalizado (%)")
+        plt.ylabel(var)
+        plt.title(f"Comparação de {var} entre {intensity1} e {intensity2}")
+        plt.legend()
+        plt.grid(True)
+        save_path = os.path.join(output_folder, f"ComparisonLine_{safe_var}.png")
+        plt.savefig(save_path)
+        plt.close()
+
+
+# ---------- Funções para Gerar Gráficos (Série Temporal e Barras Comparativas) ----------
 def generate_time_series_plots(df, intensity, output_folder):
     """
     Gera gráficos de série temporal para cada variável (exceto tempo, segment e EMG_RMS).
-    O eixo x é o tempo relativo e os eixos y exibem a variável e o EMG_RMS (com dois eixos).
+    O eixo x é o tempo relativo e os eixos y exibem, em um eixo, a variável e, no outro, EMG_RMS.
     Os gráficos são salvos na pasta output_folder com nomes sanitizados.
     """
     os.makedirs(output_folder, exist_ok=True)
@@ -230,7 +261,7 @@ def generate_time_series_plots(df, intensity, output_folder):
 
 def generate_comparison_bar_charts(df80, df120, variables, output_folder):
     """
-    Gera gráficos de barras comparativos (usando as médias) para cada variável entre os testes 80% e 120%.
+    Gera gráficos de barras comparativos (usando as médias) para cada variável entre Teste 80% e Teste 120%.
     Os gráficos são salvos na pasta output_folder com nomes sanitizados.
     """
     os.makedirs(output_folder, exist_ok=True)
@@ -247,22 +278,101 @@ def generate_comparison_bar_charts(df80, df120, variables, output_folder):
         plt.close()
 
 
-# ---------- Função para Gerar o Relatório Excel Completo com Gráficos ----------
+# ---------- Função para Gerar a Interpretação Textual da Comparação (Médias) ----------
+def generate_textual_analysis(comp_stats):
+    """
+    Gera para cada variável uma interpretação textual baseada na comparação entre 80% e 120%.
+    Isto inclui médias, diferença absoluta e percentual, teste t e tamanho do efeito.
+    Retorna um DataFrame com as colunas "Variable" e "Interpretation".
+    """
+    interpretations = []
+    for _, row in comp_stats.iterrows():
+        var = row['Variable']
+        mean80 = row['Mean_80']
+        mean120 = row['Mean_120']
+        diff_abs = row['Diff_abs']
+        diff_perc = row['Diff_perc']
+        t_stat = row['t_stat']
+        p_val = row['p_value']
+        d_val = row['Cohen_d']
+
+        # Classificação do tamanho do efeito
+        abs_d = abs(d_val)
+        if abs_d < 0.2:
+            effect = "insignificante"
+        elif abs_d < 0.5:
+            effect = "pequeno"
+        elif abs_d < 0.8:
+            effect = "moderado"
+        else:
+            effect = "grande"
+
+        sig_text = "significativo" if p_val < 0.05 else "não significativo"
+
+        interpretation = (
+            f"Para a variável {var}:\n"
+            f"- Média em 80%: {mean80:.2f} versus em 120%: {mean120:.2f}, resultando em uma diferença absoluta de {diff_abs:.2f} "
+            f"({diff_perc:.2f}%).\n"
+            f"- O teste t pareado apresentou t = {t_stat:.2f} com p = {p_val:.3f} ({sig_text}), e o tamanho do efeito (Cohen's d) foi {d_val:.2f} "
+            f"(efeito {effect})."
+        )
+        interpretations.append({'Variable': var, 'Interpretation': interpretation})
+    return pd.DataFrame(interpretations)
+
+
+# ---------- Função para Gerar a Interpretação Textual Comparando Correlações com EMG ----------
+def generate_textual_analysis_emg(rel80, rel120):
+    """
+    Gera uma interpretação textual para cada variável, comparando as correlações com a EMG
+    em 80% e 120%.
+    Retorna um DataFrame com as colunas "Variable" e "Interpretation_EMG".
+    """
+    interpretations = []
+    for var in rel80['Variable']:
+        corr80 = rel80.loc[rel80['Variable'] == var, 'Correlation_EMG'].values[0]
+        corr120 = rel120.loc[rel120['Variable'] == var, 'Correlation_EMG'].values[0]
+
+        def classify_corr(corr):
+            abs_corr = abs(corr)
+            if abs_corr < 0.3:
+                return "fraca"
+            elif abs_corr < 0.6:
+                return "moderada"
+            else:
+                return "forte"
+
+        level80 = classify_corr(corr80)
+        level120 = classify_corr(corr120)
+
+        interpretation = (
+            f"Para a variável {var}, a correlação com a EMG foi de {corr80:.2f} ({level80}) em 80% e {corr120:.2f} ({level120}) em 120%."
+        )
+        interpretations.append({'Variable': var, 'Interpretation_EMG': interpretation})
+    return pd.DataFrame(interpretations)
+
+
+# ---------- Função para Gerar o Relatório Excel Completo com Gráficos e Interpretação ----------
 def generate_full_excel_report(df_quark_80, df_quark_120, corr_80, corr_120,
                                stats80, stats120, rel80, rel120, ttest_results, comp_stats,
-                               folder_plots_80, folder_plots_120, comp_folder, filename='Full_Report.xlsx'):
+                               folder_plots_80, folder_plots_120, comp_folder, line_folder,
+                               filename='Full_Report.xlsx'):
     """
     Gera um relatório Excel contendo:
       - Planilhas "Teste 80%" e "Teste 120%" com os dados sincronizados.
       - Planilha "Resumo" com estatísticas descritivas, correlações e resultados do teste t pareado.
-      - Planilha "Comparativo" com a tabela de comparação detalhada (comp_stats).
-      - Planilhas "Gráficos_80", "Gráficos_120" e "G_80e120" com os gráficos inseridos.
+      - Planilha "Comparativo" com a tabela comparativa detalhada.
+      - Planilha "Interpretation" com a interpretação textual da comparação de médias.
+      - Planilha "Interpretation_EMG" com a interpretação textual comparando as correlações com a EMG.
+      - Planilhas "Gráficos_80", "Gráficos_120", "G_80e120" e "Line_Comparison" inserindo os gráficos salvos.
     """
+    textual_df = generate_textual_analysis(comp_stats)
+    textual_emg_df = generate_textual_analysis_emg(rel80, rel120)
+
     with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
         df_quark_80.to_excel(writer, sheet_name='Teste 80%', index=False)
         df_quark_120.to_excel(writer, sheet_name='Teste 120%', index=False)
 
-        # Junta estatísticas e correlações para resumo geral
+        # Resumo estatístico
         stats80['Teste'] = '80%'
         stats120['Teste'] = '120%'
         summary = pd.concat([stats80, stats120], ignore_index=True)
@@ -270,19 +380,22 @@ def generate_full_excel_report(df_quark_80, df_quark_120, corr_80, corr_120,
         rel120['Teste'] = '120%'
         rel_summary = pd.concat([rel80, rel120], ignore_index=True)
         resumo = pd.merge(summary, rel_summary, on=['Teste', 'Variable'], how='outer')
-        # Mescla os resultados do teste t pareado
         ttest_results = ttest_results.drop(columns=['Teste'], errors='ignore')
         resumo = pd.merge(resumo, ttest_results, on='Variable', how='left')
         resumo = resumo[['Teste', 'Variable', 'count', 'mean', 'std', 'min', '25%', '50%', '75%', 'max',
                          'Correlation_EMG', 't_stat', 'p_value']]
         resumo.to_excel(writer, sheet_name='Resumo', index=False)
 
-        # Inserir a tabela comparativa dos efeitos
+        # Tabela comparativa detalhada
         comp_stats.to_excel(writer, sheet_name='Comparativo', index=False)
+
+        # Inserir as interpretações textuais
+        textual_df.to_excel(writer, sheet_name='Interpretation', index=False)
+        textual_emg_df.to_excel(writer, sheet_name='Interpretation_EMG', index=False)
 
         workbook = writer.book
 
-        # Função auxiliar para inserir imagens de uma pasta em uma planilha
+        # Função auxiliar para inserir imagens de uma pasta numa planilha
         def insert_images_from_folder(worksheet, folder, start_row):
             images = [f for f in os.listdir(folder) if f.endswith(".png")]
             row = start_row
@@ -301,7 +414,40 @@ def generate_full_excel_report(df_quark_80, df_quark_120, corr_80, corr_120,
         worksheetComp = workbook.add_worksheet("G_80e120")
         insert_images_from_folder(worksheetComp, comp_folder, start_row=0)
 
+        worksheetLine = workbook.add_worksheet("Line_Comparison")
+        insert_images_from_folder(worksheetLine, line_folder, start_row=0)
+
     print(f"\nRelatório completo gerado e salvo em '{filename}'.")
+
+
+# ---------- Função para Gerar Gráficos de Linha Comparativos ----------
+def generate_comparison_line_plots(df1, df2, intensity1, intensity2, total_time1, total_time2, variables,
+                                   output_folder):
+    """
+    Para cada variável, gera um gráfico de linha em que o eixo x é o tempo normalizado em % (0 a 100%),
+    e o eixo y representa os valores da variável, com linhas para cada intensidade.
+    Os gráficos são salvos na pasta output_folder.
+    """
+    os.makedirs(output_folder, exist_ok=True)
+    # Cria cópias e calcula tempo normalizado para cada DataFrame
+    df1 = df1.copy()
+    df2 = df2.copy()
+    df1['norm_time'] = (df1['rel_time_sec'] / total_time1) * 100
+    df2['norm_time'] = (df2['rel_time_sec'] / total_time2) * 100
+
+    for var in variables:
+        safe_var = sanitize_filename(var)
+        plt.figure(figsize=(10, 6))
+        plt.plot(df1['norm_time'], df1[var], marker='o', linestyle='-', color='blue', label=f"{intensity1}")
+        plt.plot(df2['norm_time'], df2[var], marker='x', linestyle='--', color='red', label=f"{intensity2}")
+        plt.xlabel("Tempo Normalizado (%)")
+        plt.ylabel(var)
+        plt.title(f"Comparação de {var}: {intensity1} vs {intensity2}")
+        plt.legend()
+        plt.grid(True)
+        save_path = os.path.join(output_folder, f"ComparisonLine_{safe_var}.png")
+        plt.savefig(save_path)
+        plt.close()
 
 
 # ---------- Função Main ----------
@@ -323,7 +469,7 @@ def main():
     stats80 = detailed_statistics(df_quark_80, variables)
     stats120 = detailed_statistics(df_quark_120, variables)
 
-    # Correlações individuais com EMG_RMS
+    # Correlações entre cada variável e EMG_RMS
     rel80 = analyze_relationships(df_quark_80, variables)
     rel120 = analyze_relationships(df_quark_120, variables)
 
@@ -337,7 +483,12 @@ def main():
     folder_comp = "G_80e120"
     generate_comparison_bar_charts(df_quark_80, df_quark_120, variables, folder_comp)
 
-    # Calcular médias por segmento para teste t pareado
+    # Gerar gráficos de linha comparando ambas intensidades (normalizados pelo tempo)
+    folder_line = "Line_Comparison"
+    generate_comparison_line_plots(df_quark_80, df_quark_120, "80%", "120%", total_time_80, total_time_120, variables,
+                                   folder_line)
+
+    # Calcular as médias por segmento para teste t pareado
     means80 = compute_segment_means(df_quark_80, variables, n_segments=10)
     means120 = compute_segment_means(df_quark_120, variables, n_segments=10)
     ttest_results = perform_paired_t_tests(means80, means120, variables)
@@ -346,12 +497,12 @@ def main():
     print("\nResultados do teste t pareado:")
     print(ttest_results)
 
-    # Calcular uma análise comparativa detalhada entre as intensidades para cada variável
+    # Calcular comparação detalhada entre intensidades
     comp_stats = comparative_statistics(df_quark_80, df_quark_120, variables)
     print("\nComparação detalhada entre intensidades (80% vs 120%):")
     print(comp_stats)
 
-    # Tabela comparativa simples das médias (80% vs 120%)
+    # Tabela comparativa simples das médias
     comp_table = pd.DataFrame({
         'Variable': variables,
         'Mean_80': [df_quark_80[var].mean() for var in variables],
@@ -360,7 +511,7 @@ def main():
     print("\nComparativo das médias das variáveis (80% vs 120%):")
     print(comp_table)
 
-    # Gerar relatório Excel completo com os gráficos, resumo, e tabela comparativa
+    # Gerar relatório Excel completo com todos os elementos
     generate_full_excel_report(df_quark_80, df_quark_120,
                                corr_80=np.corrcoef(df_quark_80["VO2"], df_quark_80["EMG_RMS"])[0, 1],
                                corr_120=np.corrcoef(df_quark_120["VO2"], df_quark_120["EMG_RMS"])[0, 1],
@@ -371,9 +522,10 @@ def main():
                                folder_plots_80=folder_plots_80,
                                folder_plots_120=folder_plots_120,
                                comp_folder=folder_comp,
+                               line_folder=folder_line,
                                filename='emg_ergometry_report.xlsx')
 
-    # Exemplo de plot simples para visualizar o teste 80%
+    # Exemplo de plot simples para visualizar Teste 80%
     plt.figure(figsize=(10, 6))
     plt.plot(df_quark_80["rel_time_sec"], df_quark_80["EMG_RMS"], "o-", label="EMG_RMS (80%)")
     plt.plot(df_quark_80["rel_time_sec"], df_quark_80["VO2"], "x-", label="VO2 (80%)")
