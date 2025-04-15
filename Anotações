@@ -1,0 +1,77 @@
+# Creating a text file with the summary of equations and their application
+
+content = """Resumo das Equações e Aplicações
+
+1. Regressão Linear no Tempo
+Equação:
+    y(t) = α + β t + ε
+
+Descrição:
+- y(t): variável de interesse (por exemplo, VE ou EMG_RMS) em função do tempo.
+- α: intercepto (valor estimado em t=0).
+- β: inclinação — taxa de mudança de y por segundo.
+- ε: erro residual.
+
+Aplicação:
+1. Para cada indivíduo e condição (80%/120%), selecione pares (t_i, y_i).
+2. Ajuste com numpy.polyfit(t, y, 1) ou statsmodels.OLS.
+3. Interprete β: β>0 indica aumento, β<0 indica diminuição (sinal de fadiga).
+4. Compare β_80% vs β_120% com teste pareado.
+
+2. Correlação por Segmento e Fisher’s z-Test
+Equação de Pearson:
+    r = Σ[(V_i - V̄)(E_i - Ē)] / [√Σ(V_i - V̄)^2 √Σ(E_i - Ē)^2]
+
+Fisher’s z-transform:
+    z = atanh(r) = 0.5 ln((1+r)/(1-r))
+
+Aplicação:
+1. Calcule r em cada segmento para VE e EMG_RMS.
+2. Transforme em z: z = atanh(r).
+3. Compare z_80% vs z_120% com t-test pareado.
+4. Mudança significativa em r indica alteração na relação ventilação–EMG.
+
+3. Teste Pareado (t-Test / Wilcoxon)
+- Shapiro–Wilk: avalia normalidade das diferenças d_i = x_i - y_i.
+- Se p ≥ 0.05: use t-test pareado:
+    t = d̄ / (s_d / √n)
+- Caso contrário: use Wilcoxon pareado (não paramétrico).
+
+Aplicação:
+1. Para cada métrica, forme pares (x_i, y_i).
+2. Verifique normalidade de d_i.
+3. Escolha o teste adequado.
+4. p < 0.05 indica diferença estatisticamente significativa.
+
+4. Modelo de Efeitos Mistos
+Equação:
+    EMG_RMS_{ij} = γ0 + γ1 V_{ij} + γ2 Cond_i + γ3 (V_{ij}×Cond_i) + u_i + ε_{ij}
+
+- i: indivíduo; j: observação.
+- V_{ij}: variável respiratória.
+- Cond_i: condição (0=80%,1=120%).
+- γ: coeficientes fixos.
+- u_i: efeito aleatório de sujeito.
+- ε_{ij}: erro residual.
+
+Aplicação:
+1. Concatene dados com colunas Indiv, Cond, V, EMG_RMS.
+2. Ajuste com statsmodels:
+    smf.mixedlm("EMG_RMS ~ V*Cond", data, groups="Indiv").fit()
+3. γ3 significativo indica que o efeito de V sobre EMG difere entre 80% e 120%.
+
+Uso Integrado:
+1. Trend Analysis para quantificar mudanças em VE e EMG_RMS.
+2. Correlação por segmento para avaliar associação local.
+3. Teste pareado para comparar métricas entre condições.
+4. Modelo misto para analisar interação e controlar variabilidade entre indivíduos.
+
+Essas técnicas permitem identificar automaticamente quais variáveis apresentam mudanças relevantes na relação ventilação–EMG sob diferentes intensidades, fornecendo uma base robusta para interpretação fisiológica.
+"""
+
+# Write to file
+path = "/mnt/data/resumo_equacoes.txt"
+with open(path, "w", encoding="utf-8") as f:
+    f.write(content)
+
+path
