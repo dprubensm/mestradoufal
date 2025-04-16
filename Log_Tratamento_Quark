@@ -1,0 +1,38 @@
+## Tratamento do Quark ##
+
+ATENÇÃO:
+1) Sincronizar dados do Quark com a EMG em hh:mm:ss
+2) Mark inicial no começo do teste, ao iniciar a pedalada, mark final ao encerrar.
+
+
+-----------------------------------------------------------
+Determinação do 2 limiar ventilatório em Wats (Potência)
+----------------------------------------------------------
+
+a) Observar tempo total de teste mark inicial e mark final e arrendondar para minutos fechados.
+Exemplo: Mark final em 00:12:32 irá ser 00:12:00 e na intensidade correspondente a este estágio
+
+b) Fazer média dos 10/15 últimos segundos de cada estágio (intervalo de empo de 60s) e definir o valor médio para cada variável do quark
+Exemplo: Se tiver 10 estágios, serão 10 valores médios para cada variável
+
+c) Plotar gráfico utilizando dois métodos de verificação do 2 limiar ventilatório
+
+     Método 1 - V-Slop (Relação do VCO2/VO2) - Espera-se 1 quebra
+     Método 2 - Relação VE/VO2 e Relação VE/VCO2 - Espera-se 2 quebras, uma do VO2 e outra do VCO2
+                - Fazer a reta do VE/VCO2 
+                - Fazer a reta do VE/VO2
+
+d) Construção de duas retas para qualquer que seja o método para encontrar a interseccção
+          - A interssecção das duas retas será o ponto do 2 limiar ventilatório;
+          - O valor de R deverá ser mais próximo de 1, quanto mais baixo, indicativo de que o ponto não pertence a reta.
+
+e) Necessidade de deixar cada ponto na sua devida reta para encontrar uma boa estimativa.
+          - Realizar manualmente via Excel
+          - Tratamento via Python para identificar o ponto da interssecção e com um R próximo a 1
+
+
+
+
+
+
+
