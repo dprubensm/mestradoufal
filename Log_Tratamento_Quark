@@ -15,12 +15,21 @@ Exemplo: Mark final em 00:12:32 irá ser 00:12:00 e na intensidade correspondent
 b) Fazer média dos 10/15 últimos segundos de cada estágio (intervalo de empo de 60s) e definir o valor médio para cada variável do quark
 Exemplo: Se tiver 10 estágios, serão 10 valores médios para cada variável
 
-c) Plotar gráfico utilizando dois métodos de verificação do 2 limiar ventilatório
+c) Plotar gráfico utilizando dois métodos de verificação do limiar ventilatório, em relação ao segundo limiar, há algumas controvérsias, pois este método é para o VT1.
 
-     Método 1 - V-Slop (Relação do VCO2/VO2) - Espera-se 1 quebra
-     Método 2 - Relação VE/VO2 e Relação VE/VCO2 - Espera-se 2 quebras, uma do VO2 e outra do VCO2
+    ✦ Método 1 - V-Slop (Relação do VCO2/VO2) - Espera-se 1 quebra
+     -> É plotado VCO2 no eixo Y e o VO2 no eixo x
+
+    ✦ Método 2 - Relação VE/VO2 e Relação VE/VCO2 - Espera-se 2 quebras, uma do VO2 e outra do VCO2
                 - Fazer a reta do VE/VCO2 
                 - Fazer a reta do VE/VO2
+
+   -> Neste método, o VE/VCO2 cresce maior que o VE/VO2
+
+    ✦ Método 3 - Excesso do Dióxido de carbono ao longo do tempo
+   
+   -> O cálculo seria:
+                     ((VCO2²/VO2 ) - VCO2)
 
 d) Construção de duas retas para qualquer que seja o método para encontrar a interseccção
           - A interssecção das duas retas será o ponto do 2 limiar ventilatório;
